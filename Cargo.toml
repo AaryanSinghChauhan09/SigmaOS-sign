@@ -1,0 +1,20 @@
+[package]
+name = "sigmasign"
+version = "0.1.0"
+edition = "2021"
+description = "SigmaOS digital signature and code signing tool"
+authors = ["SigmaOS Contributors"]
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "sigmasign"
+path = "src/main.rs"
+
+[lib]
+name = "sigmasign"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+
+[dev-dependencies]
