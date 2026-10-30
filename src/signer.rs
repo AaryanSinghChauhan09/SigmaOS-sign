@@ -103,14 +103,16 @@ impl Default for Signer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::fs;
 
     #[test]
     fn sign_temp_file() {
-        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
-        f.write_all(b"hello sigma").expect("write");
+        let path = std::env::temp_dir().join(format!("sigma-sign-test-{}", std::process::id()));
+        fs::write(&path, b"hello sigma").expect("write");
         let signer = Signer::new();
         // Signing should not error (stub implementation)
-        assert!(signer.sign_file(f.path()).is_ok());
+        assert!(signer.sign_file(&path).is_ok());
+        fs::remove_file(&path).ok();
+        fs::remove_file(path.with_extension("sig")).ok();
     }
 }
