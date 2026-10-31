@@ -3,8 +3,11 @@
 //! Single responsibility: produce detached Ed25519 signatures for files.
 //! Inspired by omacom/signed.
 
+use crate::verifier::VerifyKey;
+use ed25519_dalek::{Signer as DalekSigner, SigningKey as DalekSigningKey};
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 /// Errors that can occur during signing.
@@ -12,6 +15,8 @@ use std::path::Path;
 pub enum SignError {
     IoError(std::io::Error),
     KeyLoadFailed(String),
+    KeyGenerationFailed(String),
+    MissingSigningKey,
     SignFailed(String),
 }
 
@@ -20,6 +25,8 @@ impl fmt::Display for SignError {
         match self {
             SignError::IoError(e) => write!(f, "I/O error: {}", e),
             SignError::KeyLoadFailed(msg) => write!(f, "Key load failed: {}", msg),
+            SignError::KeyGenerationFailed(msg) => write!(f, "Key generation failed: {}", msg),
+            SignError::MissingSigningKey => write!(f, "No signing key is configured"),
             SignError::SignFailed(msg) => write!(f, "Signing failed: {}", msg),
         }
     }
@@ -32,9 +39,8 @@ impl From<std::io::Error> for SignError {
 }
 
 /// Signing key material (Ed25519 private key bytes).
-#[derive(Debug, Clone)]
 pub struct SigningKey {
-    bytes: [u8; 32],
+    pub(crate) inner: DalekSigningKey,
 }
 
 impl SigningKey {
@@ -48,13 +54,50 @@ impl SigningKey {
         }
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&data);
-        Ok(SigningKey { bytes })
+        Ok(Self::from_bytes(bytes))
     }
 
-    /// Generate an ephemeral random key (for testing / key generation).
-    pub fn generate() -> Self {
-        // TODO: replace with a proper CSPRNG call
-        SigningKey { bytes: [0u8; 32] }
+    /// Construct a signing key from its 32-byte Ed25519 seed.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self {
+            inner: DalekSigningKey::from_bytes(&bytes),
+        }
+    }
+
+    /// Generate a signing key using the operating system's cryptographic RNG.
+    pub fn generate() -> Result<Self, SignError> {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes)
+            .map_err(|error| SignError::KeyGenerationFailed(error.to_string()))?;
+        Ok(Self::from_bytes(bytes))
+    }
+
+    /// Return the public key corresponding to this signing key.
+    pub fn verifying_key(&self) -> VerifyKey {
+        VerifyKey {
+            inner: self.inner.verifying_key(),
+        }
+    }
+
+    /// Write the raw 32-byte seed to a new owner-readable file.
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SignError> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path)?;
+        file.write_all(&self.inner.to_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SigningKey([REDACTED])")
     }
 }
 
@@ -67,7 +110,7 @@ pub struct Signer {
 }
 
 impl Signer {
-    /// Create a signer without a pre-loaded key (key loaded lazily from default path).
+    /// Create a signer without a key. Signing fails until a key is supplied.
     pub fn new() -> Self {
         Signer { key: None }
     }
@@ -88,9 +131,9 @@ impl Signer {
     }
 
     /// Produce an Ed25519 signature over raw bytes.
-    fn sign_bytes(&self, _data: &[u8]) -> Result<Vec<u8>, SignError> {
-        // TODO: call Ed25519 impl with self.key
-        Ok(vec![0u8; 64])
+    fn sign_bytes(&self, data: &[u8]) -> Result<Vec<u8>, SignError> {
+        let key = self.key.as_ref().ok_or(SignError::MissingSigningKey)?;
+        Ok(key.inner.sign(data).to_bytes().to_vec())
     }
 }
 
@@ -109,8 +152,8 @@ mod tests {
     fn sign_temp_file() {
         let path = std::env::temp_dir().join(format!("sigma-sign-test-{}", std::process::id()));
         fs::write(&path, b"hello sigma").expect("write");
-        let signer = Signer::new();
-        // Signing should not error (stub implementation)
+        let key = SigningKey::generate().expect("OS randomness available");
+        let signer = Signer::with_key(key);
         assert!(signer.sign_file(&path).is_ok());
         fs::remove_file(&path).ok();
         fs::remove_file(path.with_extension("sig")).ok();

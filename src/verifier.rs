@@ -3,8 +3,10 @@
 //! Single responsibility: validate detached Ed25519 signatures.
 //! Inspired by omacom/signed.
 
+use ed25519_dalek::{Signature, VerifyingKey as DalekVerifyingKey};
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 /// Errors that can occur during verification.
@@ -14,6 +16,7 @@ pub enum VerifyError {
     SignatureNotFound(String),
     KeyLoadFailed(String),
     MalformedSignature,
+    MissingVerificationKey,
 }
 
 impl fmt::Display for VerifyError {
@@ -23,6 +26,7 @@ impl fmt::Display for VerifyError {
             VerifyError::SignatureNotFound(p) => write!(f, "Signature file not found: {}", p),
             VerifyError::KeyLoadFailed(msg) => write!(f, "Key load failed: {}", msg),
             VerifyError::MalformedSignature => write!(f, "Signature is malformed"),
+            VerifyError::MissingVerificationKey => write!(f, "No verification key is configured"),
         }
     }
 }
@@ -34,9 +38,8 @@ impl From<std::io::Error> for VerifyError {
 }
 
 /// Verification public key (Ed25519 public key bytes).
-#[derive(Debug, Clone)]
 pub struct VerifyKey {
-    bytes: [u8; 32],
+    pub(crate) inner: DalekVerifyingKey,
 }
 
 impl VerifyKey {
@@ -44,15 +47,31 @@ impl VerifyKey {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, VerifyError> {
         let data = fs::read(path.as_ref())?;
         if data.len() != 32 {
-            return Err(VerifyKey::key_error());
+            return Err(VerifyError::KeyLoadFailed(
+                "key file must be exactly 32 bytes".to_string(),
+            ));
         }
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&data);
-        Ok(VerifyKey { bytes })
+        Self::from_bytes(bytes)
     }
 
-    fn key_error() -> VerifyError {
-        VerifyError::KeyLoadFailed("key file must be exactly 32 bytes".to_string())
+    /// Construct a verification key from its raw 32-byte encoding.
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, VerifyError> {
+        let inner = DalekVerifyingKey::from_bytes(&bytes)
+            .map_err(|error| VerifyError::KeyLoadFailed(error.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Write the raw public key to a new file.
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), VerifyError> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(&self.inner.to_bytes())?;
+        file.sync_all()?;
+        Ok(())
     }
 }
 
@@ -65,7 +84,7 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// Create a verifier that loads the default system public key on first use.
+    /// Create a verifier without a key. Verification fails until a key is supplied.
     pub fn new() -> Self {
         Verifier { key: None }
     }
@@ -93,12 +112,16 @@ impl Verifier {
     }
 
     /// Validate raw data against a raw signature.
-    fn verify_bytes(&self, _data: &[u8], sig: &[u8]) -> Result<bool, VerifyError> {
+    fn verify_bytes(&self, data: &[u8], sig: &[u8]) -> Result<bool, VerifyError> {
         if sig.len() != 64 {
             return Err(VerifyError::MalformedSignature);
         }
-        // TODO: call Ed25519 verify with self.key
-        Ok(true)
+        let key = self
+            .key
+            .as_ref()
+            .ok_or(VerifyError::MissingVerificationKey)?;
+        let signature = Signature::from_slice(sig).map_err(|_| VerifyError::MalformedSignature)?;
+        Ok(key.inner.verify_strict(data, &signature).is_ok())
     }
 }
 
@@ -121,9 +144,21 @@ mod tests {
     }
 
     #[test]
-    fn well_sized_signature_accepted_by_stub() {
-        let verifier = Verifier::new();
-        let result = verifier.verify_bytes(b"data", &[0u8; 64]);
-        assert!(matches!(result, Ok(true)));
+    fn valid_signature_accepts_only_its_message() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let signature = signing_key.sign(b"data");
+        let verifier = Verifier::with_key(VerifyKey {
+            inner: signing_key.verifying_key(),
+        });
+        assert!(matches!(
+            verifier.verify_bytes(b"data", &signature.to_bytes()),
+            Ok(true)
+        ));
+        assert!(matches!(
+            verifier.verify_bytes(b"other", &signature.to_bytes()),
+            Ok(false)
+        ));
     }
 }

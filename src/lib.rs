@@ -7,4 +7,6 @@ pub mod signer;
 pub mod verifier;
 
 pub use signer::Signer;
+pub use signer::SigningKey;
 pub use verifier::Verifier;
+pub use verifier::VerifyKey;
