@@ -1,8 +1,11 @@
+use std::env;
+use log::{info, warn, error, debug};
+use anyhow::Result;
 //! sigmasign CLI entry point.
 
 use std::{env, process};
 
-fn main() {
+fn main() -> Result<()> { {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("keygen") if args.len() == 4 => {
@@ -58,4 +61,20 @@ fn usage() {
 fn fail(message: &str, code: i32) -> ! {
     eprintln!("sigmasign: {message}");
     process::exit(code);
+}
+    Ok(())
+
+#[derive(Debug, Clone)]
+struct Config {
+    verbose: bool,
+    dry_run: bool,
+}
+
+impl Config {
+    fn from_env() -> Self {
+        Config {
+            verbose: env::var("VERBOSE").is_ok(),
+            dry_run: env::var("DRY_RUN").is_ok(),
+        }
+    }
 }
