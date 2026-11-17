@@ -1,6 +1,6 @@
 [component]
 name = "SigmaOS-sign"
-description = "SigmaOS subsystem component for sign"
+description = "SigmaOS digital signature and code signing tool"
 version = "0.1.0"
 tier = 5
 
